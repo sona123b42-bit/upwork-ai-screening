@@ -1,0 +1,276 @@
+{
+  "name": "Upwork AI Job Screening & Slack Alerts",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "vibeworker-job-alert",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [1840, 976],
+      "id": "c19998a4-2acd-4306-8283-3704580aa273",
+      "name": "Vibeworker Webhook",
+      "webhookId": "8f3c1a2b-4d5e-46f7-89a0-b1c2d3e4f5a6"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || $json;\nconst job = body.job || body;\nconst client = body.client || {};\n\nconst results = [];\n\nconst title = job.title || '';\nconst link = job.url || job.link || job.job_url || '';\nconst content = job.description || '';\nconst pubDate = job.postedAt || new Date().toISOString();\nconst scoreRedFlags = job.scoreRedFlags || null;\nconst effortEstimateHours = job.effortEstimateHours || null;\nconst reasoning = job.reasoning || '';\n\nconst clientInfo = {\n  location: client.location || '',\n  paymentVerified: client.paymentVerified || false,\n  totalSpent: client.totalSpent || 0,\n  hireRate: client.hireRate || 0,\n  rating: client.rating || 0,\n  rankLabel: client.rankLabel || ''\n};\n\nif (!title) return []; // skip malformed payloads\n\nresults.push({\n  json: {\n    title,\n    link,\n    content,\n    pubDate,\n    scoreRedFlags,\n    effortEstimateHours,\n    reasoning,\n    client: clientInfo\n  }\n});\n\nreturn results;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2112, 976],
+      "id": "0e80dcdc-c9d3-49cd-9836-2de94ebd29a8",
+      "name": "Parse Webhook Payload"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4o-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-4O-MINI"
+        },
+        "responses": {
+          "values": [
+            {
+              "content": "=You're screening Upwork job posts for a freelancer who specifically does n8n workflow automation, Zapier/Make.com scenarios, CRM integrations (Attio, HubSpot, GoHighLevel backend work), Voice AI, and backend/API integration development.\n\nJob title: {{ $json.title }}\nJob description: {{ $json.content }}\n\nMark relevant ONLY if this is a genuine fit for someone who builds automation workflows/backend integrations as their core skill, such as:\n- Building or fixing n8n, Zapier, or Make.com workflows\n- CRM/API integration development (connecting systems together via code/no-code tools)\n- Voice AI or chatbot backend development\n- Custom automation scripting or backend developer roles\n\nMark NOT relevant if the job is:\n- Generic admin/virtual assistant work (data entry, spreadsheet cleanup, lead list building) even if it mentions 'automation' loosely\n- Marketing, copywriting, content, video editing, or design work\n- Sales/closing roles (e.g. 'SaaS closer', 'high-ticket closer') even if automation-adjacent\n- Excel/spreadsheet formula work that isn't actual workflow automation\n- Too vague to tell if real automation development is required\n\nReply with ONLY valid JSON, no other text:\n{\"relevant\": true or false, \"reason\": \"one short sentence why\"}"
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2.3,
+      "position": [2352, 976],
+      "id": "0585891d-89b8-4166-8531-083e6ea392fa",
+      "name": "Screen with AI",
+      "credentials": {
+        "openAiApi": {
+          "id": null,
+          "name": "",
+          "__aiGatewayManaged": true
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const originalItems = $('Parse Webhook Payload').all();\n\nconst results = [];\n\nfor (let i = 0; i < items.length; i++) {\n  const aiItem = items[i];\n  const originalItem = originalItems[i];\n\n  if (!originalItem) continue;\n\n  let parsed;\n  try {\n    let rawText = aiItem.json.output[0].content[0].text;\n    // Strip markdown code fences like ```json ... ```\n    rawText = rawText.replace(/```json\\s*/i, '').replace(/```\\s*$/, '').trim();\n    parsed = JSON.parse(rawText);\n  } catch (e) {\n    continue;\n  }\n\n  if (parsed.relevant === true) {\n    results.push({\n      json: {\n        title: originalItem.json.title,\n        link: originalItem.json.link,\n        pubDate: originalItem.json.pubDate,\n        reason: parsed.reason\n      }\n    });\n  }\n}\n\nreturn results;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2672, 976],
+      "id": "f00dffff-bfdb-40ba-a4e4-8403bd5931ae",
+      "name": "Keep Only Relevant"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://slack.com/api/chat.postMessage",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"channel\": \"C0C1L4JFL1J\",\n  \"blocks\": [\n    {\n      \"type\": \"section\",\n      \"text\": {\n        \"type\": \"mrkdwn\",\n        \"text\": \"\\ud83d\\udcbc *{{ $json.title }}*\\n\\n<{{ $json.link }}|View on Upwork>\\n\\n*Why it matched:* {{ $json.reason }}\"\n      }\n    },\n    {\n      \"type\": \"actions\",\n      \"elements\": [\n        {\n          \"type\": \"button\",\n          \"text\": {\n            \"type\": \"plain_text\",\n            \"text\": \"\\u2705 Mark Done\"\n          },\n          \"action_id\": \"mark_done\",\n          \"value\": \"{{ $json.link }}\"\n        }\n      ]\n    }\n  ]\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2912, 976],
+      "id": "ff006406-506f-44e7-828c-a9c322ae034d",
+      "name": "Send Slack Message",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "hzhfPxtgC39pl4uc",
+          "name": "Slack Bot Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"status\": \"received\" }",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2352, 1200],
+      "id": "202d1a16-c179-4cf8-9b86-de0455d86973",
+      "name": "Acknowledge Webhook"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "upwork-done",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [1808, 1536],
+      "id": "07494ea5-daa3-41eb-bc1d-a680a78fe6d2",
+      "name": "Slack Interaction Webhook",
+      "webhookId": "30ad5217-f764-47b0-ab1a-1a2ae69d4014"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $json.body;\n\n// Slack's one-time URL verification handshake (JSON body, Events API only)\nif (body.type === 'url_verification') {\n  return [{\n    json: {\n      is_challenge: true,\n      challenge: body.challenge\n    }\n  }];\n}\n\n// Button clicks (block_actions) come as form-urlencoded with a JSON string in `payload`\nif (body.payload) {\n  let parsedPayload;\n  try {\n    parsedPayload = JSON.parse(body.payload);\n  } catch (e) {\n    parsedPayload = null;\n  }\n\n  return [{\n    json: {\n      is_challenge: false,\n      payload: parsedPayload\n    }\n  }];\n}\n\n// Fallback for anything else (e.g. Events API notifications)\nreturn [{\n  json: {\n    is_challenge: false,\n    event: body.event || {}\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2080, 1504],
+      "id": "e6d995b2-f392-467e-9e8c-e5fef24391d9",
+      "name": "Handle Slack Verification"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.is_challenge }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2336, 1504],
+      "id": "a6981c27-db19-483b-a77e-943738e23767",
+      "name": "Is Challenge?"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"challenge\": $json.challenge } }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2576, 1392],
+      "id": "71577813-55b8-4967-aee9-eb5cfd019b81",
+      "name": "Respond With Challenge"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2560, 1792],
+      "id": "e4b9e841-3ec9-4ef8-a377-75005aa521b6",
+      "name": "Acknowledge Slack Event"
+    },
+    {
+      "parameters": {
+        "jsCode": "const payload = $json.payload;\n\nif (!payload || !payload.actions || !payload.actions[0]) {\n  return [{ json: { valid: false } }];\n}\n\nconst action = payload.actions[0];\n\nreturn [{\n  json: {\n    valid: true,\n    action_id: action.action_id,\n    value: action.value,\n    response_url: payload.response_url,\n    user: payload.user ? payload.user.username : 'someone'\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2640, 1632],
+      "id": "f36c4ee3-3d74-41bf-ac9f-28524b1e163f",
+      "name": "Parse Button Click"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.response_url }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"replace_original\": true,\n  \"text\": \"✅ Done — marked by {{ $json.user }}\\n{{ $json.value }}\"\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [2864, 1632],
+      "id": "4cdb3b88-b5b7-4c66-a1b6-b68b803bdd90",
+      "name": "Update Slack Message",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "hzhfPxtgC39pl4uc",
+          "name": "Slack Bot Token"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Vibeworker Webhook": {
+      "main": [
+        [
+          { "node": "Parse Webhook Payload", "type": "main", "index": 0 },
+          { "node": "Acknowledge Webhook", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Parse Webhook Payload": {
+      "main": [
+        [{ "node": "Screen with AI", "type": "main", "index": 0 }]
+      ]
+    },
+    "Screen with AI": {
+      "main": [
+        [{ "node": "Keep Only Relevant", "type": "main", "index": 0 }]
+      ]
+    },
+    "Keep Only Relevant": {
+      "main": [
+        [{ "node": "Send Slack Message", "type": "main", "index": 0 }]
+      ]
+    },
+    "Slack Interaction Webhook": {
+      "main": [
+        [{ "node": "Handle Slack Verification", "type": "main", "index": 0 }]
+      ]
+    },
+    "Handle Slack Verification": {
+      "main": [
+        [{ "node": "Is Challenge?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Is Challenge?": {
+      "main": [
+        [{ "node": "Respond With Challenge", "type": "main", "index": 0 }],
+        [
+          { "node": "Acknowledge Slack Event", "type": "main", "index": 0 },
+          { "node": "Parse Button Click", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Parse Button Click": {
+      "main": [
+        [{ "node": "Update Slack Message", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "timeSavedMode": "fixed",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "meta": {
+    "instanceId": "REPLACE_WITH_YOUR_N8N_INSTANCE_ID"
+  },
+  "tags": []
+}
